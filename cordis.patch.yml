@@ -1,0 +1,13 @@
+# dsh-voice-greeting bundle patch.
+# Fill in your own WAV paths after installing. Empty values are silent.
+- insert:
+    - id: dsh-voice-greeting
+      name: dsh-voice-greeting
+      config:
+        startupAudio: ""
+        shutdownAudio: ""
+        shutdownServiceUrl: ""
+        outputDevice: ""
+        volume: 100
+        fadeInMs: 30
+        fadeOutMs: 80

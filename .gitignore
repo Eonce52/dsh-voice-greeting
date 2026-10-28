@@ -1,0 +1,6 @@
+node_modules/
+*.log
+*.wav
+!docs/example.wav
+.DS_Store
+dist/
