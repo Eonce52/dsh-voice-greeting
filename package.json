@@ -1,7 +1,7 @@
 {
   "name": "dsh-voice-greeting",
-  "version": "0.3.3",
-  "description": "DSH startup greeting and shutdown farewell plugin, with configurable WAV files.",
+  "version": "0.3.4",
+  "description": "DSH startup greeting and shutdown farewell plugin, with configurable audio files.",
   "type": "module",
   "main": "index.js",
   "exports": {

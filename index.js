@@ -6,7 +6,7 @@
  * writes a small JSON section through /api/dsh-voice-greeting.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -15,12 +15,20 @@ import z from '@deepseek-ai/schemastery'
 
 const PKG_DIR = dirname(fileURLToPath(import.meta.url))
 const WIN_PLAYER = join(PKG_DIR, 'scripts', 'play-wav.ps1')
+const SHUTDOWN_WATCHER = join(PKG_DIR, 'scripts', 'shutdown-watch.ps1')
+const SHUTDOWN_WATCHER_VBS = join(PKG_DIR, 'scripts', 'shutdown-watch.vbs')
+const WSCRIPT_EXE = join(process.env.WINDIR || 'C:\\Windows', 'System32', 'wscript.exe')
 const DATA_FILE = process.env.DSH_VOICE_DATA_FILE || join(dirname(dirname(PKG_DIR)), 'dsh-voice-greeting.json')
 const AUDIO_DIR = join(dirname(DATA_FILE), 'dsh-voice-greeting-audio')
 const CACHE_DIR = join(dirname(DATA_FILE), 'dsh-voice-greeting-cache')
+const VOICE_LOG_FILE = join(dirname(DATA_FILE), 'dsh-voice-greeting-play.log')
+const WATCHDOG_PID_FILE = join(dirname(DATA_FILE), 'dsh-voice-greeting-watchdog.pid')
+const SHUTDOWN_MARKER = join(dirname(DATA_FILE), 'dsh-voice-greeting-shutdown.marker')
 const NS = 'dsh-voice-greeting'
 const API = '/api/dsh-voice-greeting'
 const DRY = process.env.DSH_VOICE_GREETING_DRY === '1'
+const SUPPORTED_EXTS = new Set(['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.mp4', '.m4v', '.mov', '.mkv', '.webm'])
+let ffmpegPathCache
 
 export const name = 'dsh-voice-greeting'
 export const inject = ['webServer']
@@ -41,6 +49,14 @@ export const Config = ConfigSchema
 function log(...args) {
   console.log('[dsh-voice-greeting]', ...args)
 }
+
+function runtimeLog(...args) {
+  try {
+    mkdirSync(dirname(VOICE_LOG_FILE), { recursive: true })
+    appendFileSync(VOICE_LOG_FILE, `${new Date().toISOString()} [host] ${args.map(String).join(' ')}\n`, 'utf8')
+  } catch {}
+}
+
 
 export function expandPath(value) {
   if (typeof value !== 'string' || value.trim() === '') return ''
@@ -103,6 +119,45 @@ export function inspectWav(file) {
   }
 }
 
+export function findFfmpeg() {
+  if (ffmpegPathCache !== undefined) return ffmpegPathCache
+  const candidates = [
+    process.env.DSH_VOICE_FFMPEG,
+    join(PKG_DIR, 'bin', 'ffmpeg.exe'),
+    'D:/GPT-SoVITS/ffmpeg.exe',
+    'C:/ffmpeg/bin/ffmpeg.exe',
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) { ffmpegPathCache = candidate; return candidate }
+  }
+  try {
+    const found = spawnSync('where.exe', ['ffmpeg.exe'], { timeout: 5000, windowsHide: true, encoding: 'utf8' })
+    const first = String(found.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+    if (first && existsSync(first)) { ffmpegPathCache = first; return first }
+  } catch {}
+  ffmpegPathCache = null
+  return null
+}
+
+function decodeToWav(file, ffmpeg) {
+  const stat = statSync(file)
+  const key = createHash('sha1').update(file).update(String(stat.mtimeMs)).update(String(stat.size)).update(ffmpeg).digest('hex').slice(0, 16)
+  const cached = join(CACHE_DIR, `decoded-${key}.wav`)
+  if (existsSync(cached)) return cached
+  mkdirSync(CACHE_DIR, { recursive: true })
+  const temp = cached + '.tmp.wav'
+  const result = spawnSync(ffmpeg, [
+    '-y', '-hide_banner', '-nostdin', '-loglevel', 'error',
+    '-i', file, '-vn', '-sn', '-dn', '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', temp,
+  ], { timeout: 30000, windowsHide: true, encoding: 'utf8' })
+  if (result.error || result.status !== 0 || !existsSync(temp)) {
+    try { unlinkSync(temp) } catch {}
+    throw new Error(String(result.error?.message || result.stderr || `ffmpeg exit ${result.status}`))
+  }
+  renameSync(temp, cached)
+  return cached
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
@@ -138,7 +193,35 @@ export function prepareWav(file, volume = 100, fadeInMs = 0, fadeOutMs = 0) {
   return cached
 }
 
-function playFile(file, label, sync = false, cfg = {}) {
+export function preparePlayableWav(file, cfg = {}) {
+  const wav = inspectWav(file)
+  let source = file
+  if (!wav.ok) {
+    const ffmpeg = findFfmpeg()
+    if (!ffmpeg) throw new Error(`不是 PCM WAV（${wav.error}）；MP3/M4A/FLAC 等格式需要 ffmpeg`)
+    source = decodeToWav(file, ffmpeg)
+  }
+  return prepareWav(source, cfg.volume ?? 100, cfg.fadeInMs ?? 0, cfg.fadeOutMs ?? 0)
+}
+
+function audioInfo(file) {
+  const wav = inspectWav(file)
+  if (wav.ok) return wav
+  const ffmpeg = findFfmpeg()
+  if (!ffmpeg) return { ok: false, error: `不是 PCM WAV（${wav.error}）；非 WAV 格式需要 ffmpeg` }
+  try {
+    return inspectWav(decodeToWav(file, ffmpeg))
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) }
+  }
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isFinite(Number(pid)) || Number(pid) <= 0) return false
+  try { process.kill(Number(pid), 0); return true } catch { return false }
+}
+
+function playFile(file, label, sync = false, cfg = {}, waitDeviceMs = 0) {
   const path = expandPath(file)
   if (!path) return false
   if (!existsSync(path)) {
@@ -147,20 +230,23 @@ function playFile(file, label, sync = false, cfg = {}) {
   }
   let prepared
   try {
-    prepared = prepareWav(path, cfg.volume ?? 100, cfg.fadeInMs ?? 0, cfg.fadeOutMs ?? 0)
+    prepared = preparePlayableWav(path, cfg)
   } catch (error) {
-    log(`${label} invalid wav:`, path, String(error?.message ?? error))
+    log(`${label} invalid audio:`, path, String(error?.message ?? error))
     return false
   }
-  if (DRY) return true
+  if (DRY) { runtimeLog(label, 'dry-run', prepared); return true }
   if (process.platform === 'win32') {
-    const args = ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', WIN_PLAYER, '-Path', prepared]
+    const args = ['-NoProfile', '-WindowStyle', 'Hidden', '-STA', '-ExecutionPolicy', 'Bypass', '-File', WIN_PLAYER, '-Path', prepared, '-LogPath', VOICE_LOG_FILE, '-WaitDeviceMs', String(waitDeviceMs)]
+    runtimeLog(label, 'spawn', cfg.outputDevice || 'default', path)
     if (cfg.outputDevice) args.push('-Device', String(cfg.outputDevice))
     if (sync) {
-      const result = spawnSync('powershell.exe', args, { timeout: 20000, windowsHide: true, encoding: 'utf8' }); if (result.error || result.status !== 0) { log(`${label} play failed:`, String(result.error?.message || result.stderr || `exit ${result.status}`)); return false }
+      const result = spawnSync('powershell.exe', args, { timeout: 20000, windowsHide: true, encoding: 'utf8' }); if (result.error || result.status !== 0) { log(`${label} play failed:`, String(result.error?.message || result.stderr || `exit ${result.status}`)); runtimeLog(label, 'sync-failed', String(result.error?.message || result.stderr || `exit ${result.status}`)); return false }; runtimeLog(label, 'sync-ok')
     } else {
-      const child = spawn('powershell.exe', args, { detached: true, stdio: 'ignore', windowsHide: true })
-      child.unref()
+      const child = spawn('powershell.exe', args, { detached: false, stdio: 'ignore', windowsHide: true })
+      child.on('error', (error) => runtimeLog(label, 'spawn-error', String(error?.message ?? error)))
+      child.on('exit', (code, signal) => runtimeLog(label, 'player-exit', code, signal))
+
     }
     return true
   }
@@ -240,6 +326,43 @@ export function apply(ctx, config = {}) {
     writeFileSync(DATA_FILE, JSON.stringify(next, null, 2), 'utf8')
     return next
   }
+  let watchdogPid = 0
+  function startShutdownWatcher(cfg) {
+    if (process.platform !== 'win32' || !cfg.shutdownAudio) return
+    try {
+      if (existsSync(WATCHDOG_PID_FILE)) {
+        const oldPid = Number(readFileSync(WATCHDOG_PID_FILE, 'utf8'))
+        if (oldPid > 0) spawnSync('powershell.exe', ['-NoProfile', '-Command', `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${oldPid}"; if ($p -and $p.CommandLine -like '*shutdown-watch*') { Stop-Process -Id ${oldPid} -Force }`], { timeout: 8000, windowsHide: true, stdio: 'ignore' })
+      }
+      const shutdownSource = expandPath(cfg.shutdownAudio)
+      if (!shutdownSource || !existsSync(shutdownSource)) { runtimeLog('watchdog-skip', 'missing audio', shutdownSource || cfg.shutdownAudio); return }
+      let audio
+      try {
+        audio = preparePlayableWav(shutdownSource, cfg)
+      } catch (error) {
+        runtimeLog('watchdog-skip', 'prepare failed', String(error?.message ?? error))
+        return
+      }
+      const device = String(cfg.outputDevice || '').replace(/"/g, '')
+      if (!existsSync(SHUTDOWN_WATCHER_VBS)) { runtimeLog('watchdog-skip', 'vbs watcher missing', SHUTDOWN_WATCHER_VBS); return }
+      const cmd = `"${WSCRIPT_EXE}" //nologo "${SHUTDOWN_WATCHER_VBS}" ${process.pid} "${WIN_PLAYER}" "${audio}" "${device}" "${VOICE_LOG_FILE}" "${SHUTDOWN_MARKER}"`
+      const safe = cmd.replace(/'/g, "''")
+      const ps = `$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='${safe}'}; Write-Output $r.ProcessId`
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 10000, windowsHide: true, encoding: 'utf8' })
+      const pid = Number(String(result.stdout || '').trim())
+      if (pid > 0) {
+        watchdogPid = pid
+        writeFileSync(WATCHDOG_PID_FILE, String(pid), 'utf8')
+        runtimeLog('watchdog-started', pid)
+      } else {
+        runtimeLog('watchdog-failed', String(result.stderr || result.stdout || result.error?.message || 'no pid'))
+      }
+    } catch (error) {
+      runtimeLog('watchdog-error', String(error?.message ?? error))
+    }
+  }
+
+
 
   let cleaned = false
   const cleanup = () => {
@@ -247,12 +370,21 @@ export function apply(ctx, config = {}) {
     cleaned = true
     const cfg = readConfig()
     if (!cfg.enabled) return
-    playFile(cfg.shutdownAudio, 'shutdown', true, cfg)
+    runtimeLog('cleanup', `watchdogPid=${watchdogPid} playing-fallback`)
+    const played = playFile(cfg.shutdownAudio, 'shutdown', true, cfg)
+    if (played) {
+      try { writeFileSync(SHUTDOWN_MARKER, new Date().toISOString(), 'utf8') } catch {}
+    }
     postShutdown(cfg.shutdownServiceUrl)
   }
 
   const initial = readConfig()
-  if (initial.enabled) playFile(initial.startupAudio, 'startup', false, initial)
+  if (initial.enabled) {
+    try { unlinkSync(SHUTDOWN_MARKER) } catch {}
+    runtimeLog('apply', 'startup blocking-start', initial.startupAudio, initial.outputDevice || 'default')
+    startShutdownWatcher(initial)
+    playFile(initial.startupAudio, 'startup', true, initial, 8000)
+  }
 
   const state = () => {
     const cfg = readConfig()
@@ -262,8 +394,8 @@ export function apply(ctx, config = {}) {
       exists: {
         startup: Boolean(cfg.startupAudio && existsSync(expandPath(cfg.startupAudio))),
         shutdown: Boolean(cfg.shutdownAudio && existsSync(expandPath(cfg.shutdownAudio))),
-        startupWav: cfg.startupAudio ? inspectWav(expandPath(cfg.startupAudio)) : null,
-        shutdownWav: cfg.shutdownAudio ? inspectWav(expandPath(cfg.shutdownAudio)) : null,
+        startupWav: cfg.startupAudio ? audioInfo(expandPath(cfg.startupAudio)) : null,
+        shutdownWav: cfg.shutdownAudio ? audioInfo(expandPath(cfg.shutdownAudio)) : null,
       },
     }
   }
@@ -306,9 +438,9 @@ export function apply(ctx, config = {}) {
       if (!resolved || !existsSync(resolved)) {
         json(res, 400, { ok: false, error: `音频文件不存在：${resolved || path}`, path: resolved || path }); return
       }
-      const wav = inspectWav(resolved)
+      const wav = audioInfo(resolved)
       if (!wav.ok) {
-        json(res, 400, { ok: false, error: `不是有效的 PCM WAV：${wav.error}`, path: resolved }); return
+        json(res, 400, { ok: false, error: `音频无法解码：${wav.error}`, path: resolved }); return
       }
       if (!playFile(path, `preview-${kind}`, true, cfg)) {
         json(res, 400, { ok: false, error: `音频播放失败，请检查输出设备${cfg.outputDevice ? `「${cfg.outputDevice}」` : ''}与文件权限`, path: resolved }); return
@@ -341,12 +473,29 @@ export function apply(ctx, config = {}) {
     if (req.method !== 'POST') { json(res, 405, { ok: false, error: 'method not allowed' }); return }
     try {
       const kind = String(req.headers?.['x-dvg-kind'] || 'startup').toLowerCase() === 'shutdown' ? 'shutdown' : 'startup'
+      const ext = String(req.headers?.['x-dvg-ext'] || '.wav').toLowerCase()
+      if (!SUPPORTED_EXTS.has(ext)) { json(res, 400, { ok: false, error: `不支持的音频格式：${ext}` }); return }
       const body = await readRawBody(req)
       if (body.length === 0) { json(res, 400, { ok: false, error: '空文件' }); return }
-      parseWav(body)
+
       mkdirSync(AUDIO_DIR, { recursive: true })
-      const path = join(AUDIO_DIR, kind + '.wav')
-      writeFileSync(path, body)
+      const path = join(AUDIO_DIR, kind + ext)
+      const temp = path + '.tmp'
+      writeFileSync(temp, body)
+      try {
+        preparePlayableWav(temp, readConfig())
+      } catch (error) {
+        try { unlinkSync(temp) } catch {}
+        throw new Error(`无法识别音频格式：${String(error?.message ?? error)}`)
+      }
+      renameSync(temp, path)
+      try {
+        for (const name of readdirSync(AUDIO_DIR)) {
+          if (name !== kind + ext && name.startsWith(kind + '.')) {
+            try { unlinkSync(join(AUDIO_DIR, name)) } catch {}
+          }
+        }
+      } catch {}
       await saveConfig({ [kind === 'shutdown' ? 'shutdownAudio' : 'startupAudio']: path })
       json(res, 200, { ...state(), path })
     } catch (error) {

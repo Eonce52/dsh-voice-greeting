@@ -1,9 +1,16 @@
-param(
+﻿param(
   [string]$Path,
   [string]$Device = "",
+  [string]$LogPath = "",
+  [int]$WaitDeviceMs = 0,
   [switch]$ListDevices
 )
 $ErrorActionPreference = 'Stop'
+
+function Write-PlayLog([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
+  try { Add-Content -LiteralPath $LogPath -Value ((Get-Date -Format o) + ' [player] ' + $Text) } catch {}
+}
 
 function Get-RenderDevices {
   $root = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render'
@@ -30,22 +37,48 @@ if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Path is required' }
 
 # No device selected: keep the original zero-dependency SoundPlayer path.
 if ([string]::IsNullOrWhiteSpace($Device)) {
-  $p = New-Object System.Media.SoundPlayer($Path)
-  $p.PlaySync()
-  $p.Dispose()
+  Write-PlayLog "default-start $Path"
+  try {
+    $p = New-Object System.Media.SoundPlayer($Path)
+    $p.PlaySync()
+    $p.Dispose()
+    Write-PlayLog 'default-done'
+  } catch {
+    Write-PlayLog ("default-error " + $_.Exception.Message)
+    throw
+  }
   exit 0
 }
 
 $Device = $Device.Trim()
 $DeviceId = $Device
 if (-not $Device.StartsWith('{0.0.0.')) {
-  $devices = @(Get-RenderDevices)
-  $match = $devices | Where-Object { $_.name -eq $Device } | Select-Object -First 1
-  if (-not $match) {
-    $match = $devices | Where-Object { $_.name -like "*$Device*" } | Select-Object -First 1
+  $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(0, $WaitDeviceMs))
+  while ($true) {
+    $devices = @(Get-RenderDevices)
+    $match = $devices | Where-Object { $_.name -eq $Device } | Select-Object -First 1
+    if (-not $match) {
+      $match = $devices | Where-Object { $_.name -like "*$Device*" } | Select-Object -First 1
+    }
+    if ($match) { break }
+    if ([DateTime]::UtcNow -ge $deadline) { break }
+    Start-Sleep -Milliseconds 250
   }
-  if (-not $match) { throw "Audio device not found: $Device" }
+  if (-not $match) {
+    Write-PlayLog "device-not-found $Device; fallback default"
+    try {
+      $fallback = New-Object System.Media.SoundPlayer($Path)
+      $fallback.PlaySync()
+      $fallback.Dispose()
+      Write-PlayLog 'fallback-default-done'
+    } catch {
+      Write-PlayLog ("fallback-default-error " + $_.Exception.Message)
+      throw
+    }
+    exit 0
+  }
   $DeviceId = $match.id
+  Write-PlayLog "resolved-device $($match.name) $DeviceId"
 }
 
 Add-Type -TypeDefinition @'
@@ -195,4 +228,11 @@ public static class DshWasapiPlayer {
 }
 '@
 
-[DshWasapiPlayer]::Play($DeviceId, $Path)
+Write-PlayLog "wasapi-start $DeviceId"
+try {
+  [DshWasapiPlayer]::Play($DeviceId, $Path)
+  Write-PlayLog 'wasapi-done'
+} catch {
+  Write-PlayLog ("wasapi-error " + $_.Exception.Message)
+  throw
+}

@@ -109,7 +109,7 @@ window.__ModuleLoader__.load({
 
       async function preview(kind) {
         const key = kind === 'shutdown' ? 'shutdownAudio' : 'startupAudio'
-        if (!config[key]) { flash('先填音频路径或选择 WAV', true); return }
+        if (!config[key]) { flash('先填音频路径或选择音频文件', true); return }
         setBusy(true)
         try {
           flash(kind === 'shutdown' ? '正在试听告别音…' : '正在试听启动音…')
@@ -136,9 +136,11 @@ window.__ModuleLoader__.load({
         setBusy(true)
         try {
           const body = await file.arrayBuffer()
+          const extMatch = String(file.name || '').match(/\.[a-z0-9]+$/i)
+          const ext = extMatch ? extMatch[0].toLowerCase() : '.wav'
           const res = await fetch(API + '/upload', {
             method: 'POST',
-            headers: { 'content-type': 'application/octet-stream', 'x-dvg-kind': kind },
+            headers: { 'content-type': 'application/octet-stream', 'x-dvg-kind': kind, 'x-dvg-ext': ext },
             body,
           })
           let data = null
@@ -155,7 +157,7 @@ window.__ModuleLoader__.load({
         h('span', { className: 'dvg-label', key: 'l' }, label),
         h('input', {
           key: 'i', className: 'dvg-input', value: config[key] || '',
-          placeholder: '选择 WAV，或手填完整路径',
+          placeholder: '选择音频文件，或手填完整路径',
           onChange: (e) => update(key, e.target.value),
         }),
         h('button', {
@@ -189,9 +191,9 @@ window.__ModuleLoader__.load({
             '启用',
           ]),
         ]),
-        h('div', { key: 'desc', className: 'dvg-desc' }, 'DSH 启动时播启动音，正常关闭时播告别音。可选 PCM WAV；留空则不播放。'),
+        h('div', { key: 'desc', className: 'dvg-desc' }, 'DSH 启动时播启动音，正常关闭时播告别音。支持 WAV/MP3/M4A/FLAC/OGG/AAC/WMA/MP4 等；非 WAV 格式需要 ffmpeg。'),
         h('input', {
-          key: 'file', ref: fileRef, type: 'file', accept: '.wav,audio/wav',
+          key: 'file', ref: fileRef, type: 'file', accept: '.wav,.mp3,.m4a,.aac,.flac,.ogg,.opus,.wma,.aiff,.aif,.mp4,.m4v,.mov,.mkv,.webm,audio/*,video/*',
           style: { display: 'none' },
           onChange: (e) => { const f = e.target.files && e.target.files[0]; if (f) upload(pendingKind.current, f) },
         }),

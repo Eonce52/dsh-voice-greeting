@@ -1,6 +1,6 @@
 # dsh-voice-greeting
 
-DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的 WAV，不依赖 TTS 模型；启动时不会因为模型冷启动而没声。
+DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的音频，不依赖 TTS 模型；启动时不会因为模型冷启动而没声。WAV 零依赖；MP3/M4A/FLAC/OGG/AAC/WMA/MP4 等格式自动调用 ffmpeg 提取或转码。
 
 ## 功能
 
@@ -10,6 +10,19 @@ DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的 WAV，
 - Windows 默认设备走系统自带 `SoundPlayer`，指定设备走内置 WASAPI 播放器，均零额外依赖
 - macOS 使用 `afplay`；Linux 默认 `paplay`，可用 `DSH_VOICE_PLAYER` 覆盖
 - 插件本身不包含任何人的声音素材；音频路径由使用者配置
+
+## 0.3.4 新增
+
+- 支持 WAV/MP3/M4A/AAC/FLAC/OGG/OPUS/WMA/AIFF 以及 MP4/MOV/MKV/WEBM 等音视频容器
+- 非 WAV 自动用 ffmpeg 解码成 PCM 16-bit WAV，再套用音量/淡入淡出
+- ffmpeg 自动查找：`DSH_VOICE_FFMPEG`、插件目录 `bin\ffmpeg.exe`、`D:\GPT-SoVITS\ffmpeg.exe`、PATH
+- 设置页「选择」按钮接受更多音频格式
+- 启动音改为同步播放：插件初始化会等启动音播完再继续，等待时间等于音频播放时长；播放设备最多等待 8 秒
+- 关闭音采用双保险：插件清理时同步播完再继续退出并写标记，WMI 启动的 VBS 看守只在标记不存在时兜底；全程隐藏窗口
+- 播放器 PowerShell 也使用 `-WindowStyle Hidden`，不再弹黑窗
+- 播放日志写入 profile 旁的 `dsh-voice-greeting-play.log`
+
+
 
 ## 0.3.3 新增
 
