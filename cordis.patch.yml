@@ -5,9 +5,18 @@
       name: dsh-voice-greeting
       config:
         startupAudio: ""
+        startupAudios: []
         shutdownAudio: ""
+        shutdownAudios: []
         shutdownServiceUrl: ""
         outputDevice: ""
         volume: 100
         fadeInMs: 30
         fadeOutMs: 80
+        startupBlocking: false
+        warmTts: true
+        watchdogEnabled: true
+        ffmpegPath: ""
+        ttsPython: ""
+        ttsServer: ""
+        ttsHealth: ""

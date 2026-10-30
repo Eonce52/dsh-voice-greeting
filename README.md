@@ -1,15 +1,63 @@
 # dsh-voice-greeting
 
-DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的音频，不依赖 TTS 模型；启动时不会因为模型冷启动而没声。WAV 零依赖；MP3/M4A/FLAC/OGG/AAC/WMA/MP4 等格式自动调用 ffmpeg 提取或转码。
+DSH 启动问候 / 关闭告别插件。启动/关闭各支持一组预生成音频并随机播放，不依赖 TTS 模型；WAV 全位深零依赖；MP3/M4A/FLAC/OGG/AAC/WMA/MP4 等格式自动调用 ffmpeg 提取或转码。
 
 ## 功能
 
-- DSH 加载插件时播放 `startupAudio`
-- 插件卸载 / DSH 正常关闭时播放 `shutdownAudio`
+- DSH 加载插件时从启动音列表随机播放一条
+- 插件卸载 / DSH 正常关闭时从关闭音列表随机播放一条
 - 可选：关闭时 POST 一个地址（例如本地语音服务的 `/shutdown`）
 - Windows 默认设备走系统自带 `SoundPlayer`，指定设备走内置 WASAPI 播放器，均零额外依赖
 - macOS 使用 `afplay`；Linux 默认 `paplay`，可用 `DSH_VOICE_PLAYER` 覆盖
 - 插件本身不包含任何人的声音素材；音频路径由使用者配置
+- 启动音默认异步播放，不阻塞 DSH 启动；可切回“等播完”
+- 关闭音看守在 WMI 被拦截时自动改用直接进程兜底
+- 可选本地 TTS 预热，设置页可开关；未安装时自动跳过
+
+## 0.3.9 完全体
+
+- 新增 `ffmpegPath` 自定义路径；设置页可覆盖自动探测，方便非标准安装环境
+- TTS 预热改为可配置 `ttsPython` / `ttsServer` / `ttsHealth`，不再只绑定 GPT-SoVITS 默认路径
+- 非 Web 宿主、无 TTS、无 ffmpeg 环境都会返回明确状态与警告
+- 增加 `scripts/package.ps1` 构建脚本和 GitHub Actions 标签发布工作流（使用 `GITHUB_TOKEN`，不写死任何凭据）
+- 真机用隔离 DSH 6.9.3 实例验证：0.3.9 host API 与设置页同时加载，10+10 条列表、状态和中文字段正常
+
+
+## 0.3.8 全面升级
+
+- 启动音默认异步播放，避免长音频拖慢 DSH；新增「启动阻塞」开关
+- 设置页新增「TTS 预热」「关闭看守」开关、运行状态、版本、数据目录、列表数量和警告提示
+- `webServer` 改为可选注入：非 Web 宿主也能加载插件并播放启动/关闭音，只是没有设置 API
+- 关闭音看守增加 WMI 失败后的直接进程兜底，并在保存配置时自动重建
+- 上传限制 64MB；按 SHA-1 去重，列表上限 100 条；配置采用原子写入并保留 `.bak`
+- 播放缓存自动清理：最多 128 个、最长 30 天；设置页新增「清理播放缓存」
+- 补上 `install.cmd` 的安装目录复制；新增 `uninstall.ps1` / `uninstall.cmd`，默认保留用户音频
+- 完善 ffmpeg、TTS、缓存和 profile 路径诊断，避免“看起来没反应”的静默失败
+
+
+
+## 0.3.7 修复
+
+- 修正 profile 根目录识别：只接受带 `dsh.profile` 的 package.json，不再把插件自身目录误认成 profile
+- 修复设置页启动/关闭音频列表显示为空、已有音频“消失”的问题；真实 config 与 10+10 条列表可正常读取
+
+## 0.3.6 兼容性修复
+
+- WAV 内置支持 8/16/24/32bit PCM 与 32/64bit float，包含 WAVE_FORMAT_EXTENSIBLE；这些 WAV 不再强制依赖 ffmpeg
+- 安装脚本会探测自定义/隔离 DSH_HOME，失败时列出尝试过的路径
+- package.json 改为文本级插入 bundle，并在修改前备份 package.json 与 cordis.patch.yml
+- 增加 `install.cmd`，同学解压后可直接双击安装
+- 数据/缓存路径改为向上查找真实 profile 根，兼容 pnpm isolated 布局
+- ffmpeg 增加 WinGet / Program Files / Chocolatey / Scoop 等常见路径，设置页显示是否找到
+- 设备列表输出强制 UTF-8；删除未使用的旧 shutdown-watch.ps1
+- 修复关闭音看守只检查 `shutdownAudio` 单数字段的问题；播放列表模式下现在会正常启动 VBS 看守
+
+## 0.3.5 新增
+
+- 启动音和关闭音各支持一组播放列表，每次随机选一条
+- 多条时尽量不连续重复同一个文件
+- 设置页可添加、删除、逐条试听
+- 继续支持多格式、播放设备、音量和淡入淡出
 
 ## 0.3.4 新增
 
@@ -73,41 +121,56 @@ DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的音频�
 
 安装并重启 DSH 后，打开“设置 → 通用”，会看到「启动 / 关闭语音」一栏。可以：
 
-- 开关启动/关闭提示音
-- 直接填启动音频、关闭音频的 WAV 路径
-- 点“试听”分别试听两段音频
+- 开关启动/关闭提示音、启动阻塞、TTS 预热、关闭看守
+- 添加/删除启动与关闭音频列表，逐条试听；也可直接粘贴路径
+- 查看运行状态、ffmpeg 检测、数据目录、列表数量与警告
+- 「清理播放缓存」「打开数据目录」两个维护按钮
+- 可填写 ffmpeg、TTS Python、TTS 服务脚本和健康检查路径
 - 「输出设备」留空=系统默认；可填活动输出设备名（输入框会给出候选）
 - 填关闭时要调用的地址（例如本地语音服务的 `http://127.0.0.1:9880/shutdown`）
 - 保存后写入 DSH settings，下次启动/关闭按新配置执行
 
 ## 安装
 
-把本目录放到 DSH 的 profile `node_modules` 下：
+1. 解压 zip，双击 `install.cmd`
+2. 也可以在 PowerShell 中运行：
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
+3. 自定义 / dpx 隔离环境可显式指定：
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DshHome "X:\path\dsh-home" -Profile web-desktop`
+   或先设置 `DSH_HOME` 环境变量
+4. 安装器会先备份 `package.json` / `cordis.patch.yml`，再写入 bundles + 顶层配置
+5. 完全退出并重新打开 DSH
+6. 进入「设置 → 通用 → 启动 / 关闭语音」添加音频
 
-```text
-<dsh-home>/profiles/web-desktop/node_modules/dsh-voice-greeting
+## 卸载
+
+双击 `uninstall.cmd`，会移除插件目录、`dsh.profile.bundles` 条目和 `cordis.patch.yml` 顶层配置，默认保留你的音频、配置与日志。想连用户数据一起删，运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1 -RemoveUserData
 ```
 
-然后在 `<dsh-home>/profiles/web-desktop/cordis.patch.yml` 加入：
+> 默认保留用户数据；`-RemoveUserData` 才会删除配置、音频、缓存、日志和看守标记。
 
-```yaml
-- insert:
-    - id: dsh-voice-greeting
-      name: dsh-voice-greeting
-      config:
-        startupAudio: "D:/path/to/startup.wav"
-        shutdownAudio: "D:/path/to/shutdown.wav"
-        shutdownServiceUrl: "http://127.0.0.1:9880/shutdown"
+
+## 发布
+
+本地构建：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 ```
 
-`shutdownServiceUrl` 可留空。音频路径支持绝对路径、`~` 和相对当前工作目录的路径。
+推送 `v*` 标签后，GitHub Actions `.github/workflows/release.yml` 会自动构建 zip 并创建 Release；令牌由 GitHub 的 `GITHUB_TOKEN` 注入，仓库中不保存任何 token 或私钥。
+
+
 
 ## 生成问候音
 
 用你自己的 TTS / 录音生成两段短 WAV，建议：
 
 - 3~6 秒
-- PCM 16-bit WAV
+- WAV 全位深，或 MP3/M4A/FLAC/OGG 等；非 WAV 需要 ffmpeg
 - 不要包含音乐、混响和敏感内容
 - 不要在仓库里提交别人的声音素材
 
@@ -117,12 +180,17 @@ DSH 启动问候 / 关闭告别插件。只负责播放两段预生成的音频�
 - `DSH_VOICE_SHUTDOWN_AUDIO`
 - `DSH_VOICE_SHUTDOWN_URL`
 - `DSH_VOICE_PLAYER`（Linux 播放器，默认 `paplay`）
+- `DSH_VOICE_FFMPEG`（ffmpeg.exe 路径；设置页 `ffmpegPath` 优先）
 - `DSH_VOICE_GREETING_DRY=1`（只打印路径，不播放，用于测试）
+- `DSH_VOICE_DATA_FILE`（覆盖配置/缓存所在目录，测试用）
+- `DSH_VOICE_TTS_PYTHON` / `DSH_VOICE_TTS_SERVER` / `DSH_VOICE_TTS_HEALTH`（本地 TTS 路径与健康检查）
+- `DSH_VOICE_TTS_WARM=0`（等价于设置页关闭 TTS 预热）
 
 ## 说明
 
-- 关闭告别依赖宿主正常 dispose；强制 `TerminateProcess` 时系统不会给进程清理机会。
-- 插件不读取 token、不联网、不上传任何内容。
+- 正常关闭走 dispose 同步播放；强制结束进程时由 VBS 看守补播，WMI 被拦截会回退到直接进程启动。
+- 启动音默认异步播放，不阻塞 DSH；需要“等播完”可在设置页打开「启动阻塞」。
+- 插件不读取 token、不联网、不上传任何内容；上传音频只写入本机 profile。
 - 目前主要适配 Windows；macOS/Linux 的播放命令是兜底实现。
 
 ## License

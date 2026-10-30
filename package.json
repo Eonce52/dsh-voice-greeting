@@ -1,8 +1,16 @@
 {
   "name": "dsh-voice-greeting",
-  "version": "0.3.4",
-  "description": "DSH startup greeting and shutdown farewell plugin, with configurable audio files.",
+  "version": "0.3.9",
+  "description": "DSH startup greeting and shutdown farewell plugin with playlists, non-blocking startup, configurable ffmpeg/TTS paths and shutdown fallback.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Eonce52/dsh-voice-greeting.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Eonce52/dsh-voice-greeting/issues"
+  },
+  "homepage": "https://github.com/Eonce52/dsh-voice-greeting#readme",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
@@ -16,7 +24,10 @@
     "scripts/",
     "README.md",
     "LICENSE",
-    "install.ps1"
+    "install.ps1",
+    "install.cmd",
+    "uninstall.ps1",
+    "uninstall.cmd"
   ],
   "dsh": {
     "bundle": {

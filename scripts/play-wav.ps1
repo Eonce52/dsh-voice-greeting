@@ -1,4 +1,4 @@
-﻿param(
+param(
   [string]$Path,
   [string]$Device = "",
   [string]$LogPath = "",
@@ -6,6 +6,7 @@
   [switch]$ListDevices
 )
 $ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 function Write-PlayLog([string]$Text) {
   if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
